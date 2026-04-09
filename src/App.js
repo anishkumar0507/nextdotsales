@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import StrategicAI from './StrategicAI';
 
 // ── GOOGLE SHEETS API ──────────────────────────────────────────────────────────
 const API = process.env.REACT_APP_SHEETS_API;
@@ -1295,7 +1296,14 @@ export default function App() {
         </div>
       </div>
 
-      <SalesChatbot deals={deals} setDeals={setDeals} setView={setView} setCoachDeal={setCoachDeal} role={role} activity={activity} winLoss={winLoss}/>
+      <StrategicAI
+        deals={deals}
+        activity={activity}
+        winLoss={winLoss}
+        setView={setView}
+        setCoachDeal={setCoachDeal}
+        role={role}
+      />
     </div>
   );
 }
