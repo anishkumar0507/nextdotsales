@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { PipelineDashboard, SalesMasterChat } from './PipelineCRM';
 import StrategicAI from './StrategicAI';
 
 // ── GOOGLE SHEETS API ──────────────────────────────────────────────────────────
@@ -227,105 +228,8 @@ function Login({ onLogin }) {
   );
 }
 
-// ── INBOX ───────────────────────────────────────────────────────────────────────
-function Inbox({ deals, setDeals, role, setView, setCoachDeal, activity }) {
-  const [filter,setFilter]=useState("All");
-  const [syncId,setSyncId]=useState(null);
-
-  const active=deals.filter(d=>!["Closed Won","Closed Lost"].includes(d.stage));
-  const sorted=[...active].sort((a,b)=>urgency(b)-urgency(a));
-  const shown=filter==="All"?sorted:filter==="Mine"?sorted.filter(d=>d.owner==="Ayush"||d.owner==="Ravi K"):sorted.filter(d=>d.priority===filter.toLowerCase());
-
-  async function moveStage(id,dir){
-    const deal=deals.find(d=>d.id===id); if(!deal) return;
-    const i=STAGES.indexOf(deal.stage),ni=Math.min(Math.max(i+dir,0),STAGES.length-1);
-    const newStage=STAGES[ni];
-    setDeals(prev=>prev.map(d=>d.id===id?{...d,stage:newStage}:d));
-    setSyncId(id);
-    await sheetUpdate("Deals",id,{stage:newStage,updatedAt:new Date().toISOString()});
-    await logActivity(id,deal.client,"stage_move",`Stage moved to ${newStage}`,role);
-    setSyncId(null);
-  }
-
-  async function markHandoff(id){
-    setDeals(prev=>prev.map(d=>d.id===id?{...d,handoffDone:"true"}:d));
-    await sheetUpdate("Deals",id,{handoffDone:"true",updatedAt:new Date().toISOString()});
-    const deal=deals.find(d=>d.id===id);
-    await logActivity(id,deal?.client||"","handoff","Marked as handed off to delivery",role);
-  }
-
-  const today=new Date().toDateString();
-  const todayActivity=activity.filter(a=>new Date(a.timestamp).toDateString()===today);
-
-  return (
-    <div>
-      <div style={{marginBottom:18,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-        <div>
-          <h2 style={{fontSize:20,fontWeight:700,color:C.text}}>Deal Inbox</h2>
-          <div style={{fontSize:12,color:C.textDim,marginTop:3}}>
-            Sorted by urgency · {active.length} active · ₹{active.reduce((s,d)=>s+parseFloat(d.value||0),0)}L pipeline
-            {todayActivity.length>0&&<span style={{marginLeft:8,color:C.green}}>· {todayActivity.length} activities today</span>}
-          </div>
-        </div>
-        <Btn label="+ Capture Deal" onClick={()=>setView("capture")} icon="⊕"/>
-      </div>
-      <div style={{display:"flex",gap:6,marginBottom:14,flexWrap:"wrap"}}>
-        {["All","Mine","high","med","low"].map(f=>(
-          <button key={f} onClick={()=>setFilter(f)} style={{padding:"5px 13px",background:filter===f?C.accent:C.white,border:`1px solid ${filter===f?C.accent:C.border}`,borderRadius:20,color:filter===f?"#fff":C.textMid,fontSize:11,fontWeight:filter===f?600:400,cursor:"pointer",fontFamily:"inherit"}}>{f==="high"?"🔴 High":f==="med"?"🟡 Med":f==="low"?"⚪ Low":f}</button>
-        ))}
-      </div>
-      <div style={{display:"flex",flexDirection:"column",gap:9}}>
-        {shown.map((deal,idx)=>{
-          const cfg=STAGE_CFG[deal.stage];
-          const overdue=deal.nextDate&&new Date(deal.nextDate)<=new Date();
-          const isSyncing=syncId===deal.id;
-          return (
-            <Card key={deal.id} style={{borderLeft:`4px solid ${cfg.color}`,padding:"15px 18px"}}>
-              <div style={{display:"flex",alignItems:"flex-start",gap:12}}>
-                <div style={{fontSize:12,fontWeight:800,color:C.textFaint,width:20,paddingTop:2,flexShrink:0}}>#{idx+1}</div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8,flexWrap:"wrap"}}>
-                    <div>
-                      <div style={{fontSize:14,fontWeight:700,color:C.text}}>{deal.client}</div>
-                      <div style={{fontSize:11,color:C.textDim,marginTop:2}}>{deal.contact} · {deal.owner} · {deal.vertical}</div>
-                    </div>
-                    <div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
-                      <Tag label={deal.stage} color={cfg.color}/>
-                      <Tag label={`₹${deal.value}L`} color={C.text}/>
-                      {deal.priority==="high"&&<Tag label="HIGH" color={C.red}/>}
-                      {isSyncing&&<Tag label="Saving..." color={C.orange}/>}
-                    </div>
-                  </div>
-                  <div style={{marginTop:9,padding:"9px 12px",background:overdue?C.redLight:C.accentLight,borderRadius:8,fontSize:12,color:overdue?C.red:C.textMid,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <span>→ {deal.nextAction}</span>
-                    <span style={{fontSize:10,color:C.textDim,flexShrink:0,marginLeft:8}}>{deal.nextDate}</span>
-                  </div>
-                  <div style={{display:"flex",gap:7,marginTop:9,flexWrap:"wrap",alignItems:"center"}}>
-                    <Btn label="AI Coach" onClick={()=>{setCoachDeal(deal);setView("coach");}} color={C.accent} small outline icon="✦"/>
-                    <Btn label={STAGES[STAGES.indexOf(deal.stage)+1]||"Done"} onClick={()=>moveStage(deal.id,1)} color={cfg.color} small icon="→"/>
-                    {parseInt(deal.lastTouch)>5&&<Tag label={`${deal.lastTouch}d no touch`} color={C.red}/>}
-                  </div>
-                </div>
-              </div>
-            </Card>
-          );
-        })}
-        {shown.length===0&&<div style={{padding:"48px",textAlign:"center",color:C.textDim,fontSize:13}}>No deals match this filter.</div>}
-      </div>
-      {deals.filter(d=>d.stage==="Closed Won"&&!parseBool(d.handoffDone)).length>0&&(
-        <div style={{marginTop:20}}>
-          <div style={{fontSize:11,fontWeight:700,color:C.green,letterSpacing:1,marginBottom:8,textTransform:"uppercase"}}>🎉 Pending Handoff</div>
-          {deals.filter(d=>d.stage==="Closed Won"&&!parseBool(d.handoffDone)).map(d=>(
-            <Card key={d.id} style={{borderLeft:`4px solid ${C.green}`,display:"flex",justifyContent:"space-between",alignItems:"center",padding:"13px 18px",marginBottom:8}}>
-              <div><div style={{fontSize:13,fontWeight:600,color:C.text}}>{d.client} — ₹{d.value}L</div><div style={{fontSize:11,color:C.textDim,marginTop:2}}>{d.nextAction}</div></div>
-              <Btn label="Mark Handed Off" onClick={()=>markHandoff(d.id)} color={C.green} small/>
-            </Card>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
+// ── REMOVED: Inbox component replaced by PipelineDashboard ──────────────────────
+// Note: Inbox functionality is now handled by PipelineDashboard from PipelineCRM module
 
 // ── CAPTURE ──────────────────────────────────────────────────────────────────────
 function Capture({ deals, setDeals, role }) {
@@ -1052,109 +956,9 @@ Use real data. Be specific. No generic advice.`;
   );
 }
 
-// ── SALES CHATBOT ─────────────────────────────────────────────────────────────
-function SalesChatbot({ deals, setDeals, setView, setCoachDeal, role, activity, winLoss }) {
-  const [open,setOpen]=useState(false);
-  const [msgs,setMsgs]=useState([{role:"assistant",text:"Hi! I'm your Nextdot Sales Assistant 💬\n\nI know your full live pipeline from Google Sheets — every deal, activity log, and win/loss record.\n\nTry: \"What should I focus on today?\" or \"How's the Clove Dental deal?\" or \"Who's gone stale?\""}]);
-  const [input,setInput]=useState(""); const [loading,setLoading]=useState(false); const [recording,setRecording]=useState(false);
-  const bottomRef=useRef(); const recRef=useRef(null);
-  useEffect(()=>{bottomRef.current?.scrollIntoView({behavior:"smooth"});},[msgs,loading]);
-
-  function buildContext(){
-    const active=deals.filter(d=>!["Closed Won","Closed Lost"].includes(d.stage));
-    const won=deals.filter(d=>d.stage==="Closed Won");
-    const stale=active.filter(d=>parseInt(d.lastTouch||0)>14);
-    const overdue=active.filter(d=>d.nextDate&&new Date(d.nextDate)<=new Date());
-    const wlPatterns=winLoss.length>0?`\n\nWIN/LOSS PATTERNS (${winLoss.length} records):\n${winLoss.slice(-10).map(w=>`${w.result}: ${w.client} — ${w.reason}`).join("\n")}`:"";
-    const recentAct=activity.slice(-10).length>0?`\n\nRECENT ACTIVITY:\n${activity.slice(-10).map(a=>`${a.client}: ${a.type} — ${a.note}`).join("\n")}`:"";
-    return `LIVE PIPELINE (${active.length} active, ₹${active.reduce((s,d)=>s+parseFloat(d.value||0),0)}L):\n`
-      +active.map(d=>`- ${d.client} | ₹${d.value}L | ${d.stage} | ${d.priority} | Owner: ${d.owner} | ${d.lastTouch}d since touch | Next: ${d.nextAction} (${d.nextDate}) | ${d.notes}`).join("\n")
-      +`\n\nCLOSED WON (${won.length}): ${won.map(d=>`${d.client} ₹${d.value}L`).join(", ")}`
-      +`\nSTALE >14d (${stale.length}): ${stale.map(d=>d.client).join(", ")}`
-      +`\nOVERDUE (${overdue.length}): ${overdue.map(d=>d.client).join(", ")}`
-      +wlPatterns+recentAct;
-  }
-
-  const SYS=`You are the Nextdot Sales Assistant — conversational AI for the Nextdot Sales Engine. Nextdot is an AI engineering company, India, founded by Ayush Prashar. Role: ${role}. You have full live pipeline data from Google Sheets.
-
-Rules:
-- Be specific — use real client names and numbers
-- "What to focus today" → prioritise: overdue > high priority stale > stage urgency  
-- Navigation: end reply with [ACTION:navigate:MODULE] (inbox/capture/coach/proposal/decks/forecast/weekly/delivery/intelligence)
-- Coach a deal: [ACTION:coach:CLIENT_NAME]
-- Keep answers sharp. Address Ayush as Ayush.`;
-
-  async function send(override){
-    const msg=(override||input).trim(); if(!msg||loading) return;
-    setInput(""); setMsgs(p=>[...p,{role:"user",text:msg}]); setLoading(true);
-    const ctx=buildContext();
-    const history=[...msgs,{role:"user",text:msg}].map(m=>({role:m.role==="assistant"?"assistant":"user",content:m.text}));
-    try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":process.env.REACT_APP_ANTHROPIC_KEY,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:800,system:`${SYS}\n\nLIVE DATA:\n${ctx}`,messages:history})});
-      const data=await res.json();
-      let reply=data.content?.find(b=>b.type==="text")?.text||"Error.";
-      const navMatch=reply.match(/\[ACTION:navigate:(\w+)\]/);
-      const coachMatch=reply.match(/\[ACTION:coach:([^\]]+)\]/);
-      if(navMatch){setTimeout(()=>setView(navMatch[1]),300);reply=reply.replace(/\[ACTION:navigate:\w+\]/,"").trim();}
-      if(coachMatch){const n=coachMatch[1];const d=deals.find(x=>x.client.toLowerCase().includes(n.toLowerCase()));if(d){setTimeout(()=>{setCoachDeal(d);setView("coach");},300);}reply=reply.replace(/\[ACTION:coach:[^\]]+\]/,"").trim();}
-      setMsgs(p=>[...p,{role:"assistant",text:reply}]);
-    }catch{setMsgs(p=>[...p,{role:"assistant",text:"Connection error."}]);}
-    setLoading(false);
-  }
-
-  function startVoice(){
-    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!SR){alert("Voice requires Chrome.");return;}
-    const rec=new SR(); rec.lang="en-IN"; rec.continuous=false; rec.interimResults=false;
-    rec.onstart=()=>setRecording(true);
-    rec.onresult=e=>{const t=e.results[0][0].transcript;setRecording(false);setInput(t);setTimeout(()=>send(t),150);};
-    rec.onerror=()=>setRecording(false); rec.onend=()=>setRecording(false);
-    rec.start(); recRef.current=rec;
-  }
-  function stopVoice(){recRef.current?.stop();setRecording(false);}
-
-  const CHIPS=["What to focus on today?","Any overdue deals?","Pipeline health","Who's gone stale?","Pending handoffs","Take me to Forecast","Show high priority deals"];
-
-  if(!open) return(
-    <button onClick={()=>setOpen(true)} title="Sales Assistant" style={{position:"fixed",bottom:24,right:24,zIndex:500,width:52,height:52,borderRadius:"50%",background:`linear-gradient(135deg,${C.accent},#7c3aed)`,border:"none",cursor:"pointer",boxShadow:"0 4px 20px rgba(75,107,251,.45)",fontSize:20,color:"#fff",display:"flex",alignItems:"center",justifyContent:"center"}}>💬</button>
-  );
-
-  return(
-    <div style={{position:"fixed",bottom:24,right:24,zIndex:500,width:400,height:580,background:C.white,borderRadius:18,boxShadow:"0 12px 48px rgba(0,0,0,.18)",border:`1px solid ${C.border}`,display:"flex",flexDirection:"column",overflow:"hidden"}}>
-      <div style={{padding:"13px 16px",background:`linear-gradient(135deg,${C.accent},#7c3aed)`,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
-        <div style={{display:"flex",alignItems:"center",gap:10}}>
-          <div style={{width:32,height:32,borderRadius:"50%",background:"rgba(255,255,255,.2)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15}}>💬</div>
-          <div>
-            <div style={{fontSize:13,fontWeight:700,color:"#fff"}}>Sales Assistant</div>
-            <div style={{fontSize:10,color:"rgba(255,255,255,.75)"}}>Live · Google Sheets · {deals.length} deals</div>
-          </div>
-        </div>
-        <button onClick={()=>setOpen(false)} style={{background:"rgba(255,255,255,.2)",border:"none",borderRadius:7,width:26,height:26,color:"#fff",fontSize:14,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
-      </div>
-      <div style={{flex:1,overflowY:"auto",padding:"12px 14px 6px",display:"flex",flexDirection:"column",gap:10}}>
-        {msgs.map((m,i)=>(
-          <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",alignItems:"flex-end",gap:7}}>
-            {m.role==="assistant"&&<div style={{width:22,height:22,borderRadius:"50%",background:`linear-gradient(135deg,${C.accent},#7c3aed)`,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#fff",marginBottom:2}}>✦</div>}
-            <div style={{maxWidth:"82%",padding:"9px 13px",borderRadius:m.role==="user"?"14px 14px 3px 14px":"3px 14px 14px 14px",background:m.role==="user"?C.accent:C.bg,color:m.role==="user"?"#fff":C.text,fontSize:12.5,lineHeight:1.65,border:m.role==="assistant"?`1px solid ${C.border}`:"none",whiteSpace:"pre-wrap"}}>{m.text}</div>
-          </div>
-        ))}
-        {loading&&<div style={{display:"flex",alignItems:"flex-end",gap:7}}><div style={{width:22,height:22,borderRadius:"50%",background:`linear-gradient(135deg,${C.accent},#7c3aed)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#fff"}}>✦</div><div style={{display:"flex",gap:4,padding:"9px 13px",background:C.bg,borderRadius:"3px 14px 14px 14px",border:`1px solid ${C.border}`}}>{[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:C.accent,animation:`blink 1.2s ${i*.2}s infinite`}}/>)}</div></div>}
-        <div ref={bottomRef}/>
-      </div>
-      {msgs.length<=1&&<div style={{padding:"0 12px 8px",display:"flex",flexWrap:"wrap",gap:5}}>{CHIPS.map(c=><button key={c} onClick={()=>send(c)} style={{padding:"4px 10px",background:C.accentLight,border:`1px solid ${C.accent}30`,borderRadius:20,color:C.accent,fontSize:10,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>{c}</button>)}</div>}
-      <div style={{padding:"8px 12px 12px",borderTop:`1px solid ${C.border}`,flexShrink:0}}>
-        {recording&&<div style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",background:C.redLight,borderRadius:7,marginBottom:7,fontSize:11,color:C.red}}><div style={{width:7,height:7,borderRadius:"50%",background:C.red,animation:"blink .8s infinite"}}/>Listening... tap to stop</div>}
-        <div style={{display:"flex",gap:7,alignItems:"flex-end"}}>
-          <textarea value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} placeholder="Ask anything... (Enter to send)" rows={2} style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:9,padding:"8px 11px",fontSize:12,fontFamily:"inherit",outline:"none",resize:"none",color:C.text,lineHeight:1.5}}/>
-          <div style={{display:"flex",flexDirection:"column",gap:5}}>
-            <button onClick={recording?stopVoice:startVoice} style={{width:34,height:34,borderRadius:"50%",background:recording?C.redLight:C.accentLight,border:`1.5px solid ${recording?C.red:C.accent}`,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,color:recording?C.red:C.accent,boxShadow:recording?`0 0 0 3px ${C.red}25`:"none"}}>{recording?"⏹":"🎙"}</button>
-            <button onClick={()=>send()} disabled={!input.trim()||loading} style={{width:34,height:34,borderRadius:"50%",background:C.accent,border:"none",cursor:input.trim()&&!loading?"pointer":"default",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#fff",opacity:input.trim()&&!loading?1:.35}}>→</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+// ── REMOVED: SalesChatbot component replaced by SalesMasterChat ──────────────────
+// Note: Sales chatbot functionality is now handled by SalesMasterChat from PipelineCRM module
+// The old SalesChatbot component has been completely removed in favor of the new implementation.
 
 // ── ROOT ──────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -1164,7 +968,7 @@ export default function App() {
   const [decks,setDecks]=useState([]);
   const [activity,setActivity]=useState([]);
   const [winLoss,setWinLoss]=useState([]);
-  const [coachDeal,setCoachDeal]=useState(null);
+  // Note: coachDeal state removed - PipelineDashboard and SalesMasterChat handle their own state
   const [loading,setLoading]=useState(false);
   const [syncStatus,setSyncStatus]=useState("idle"); // idle | loading | ready | error
 
@@ -1283,9 +1087,9 @@ export default function App() {
             </div>
           )}
           {(!loading||deals.length>0)&&<>
-            {view==="inbox"       &&<Inbox       deals={deals} setDeals={setDeals} role={role} setView={setView} setCoachDeal={setCoachDeal} activity={activity}/>}
+            {view==="inbox"       &&<PipelineDashboard deals={deals} setDeals={setDeals} activity={activity} role={role} sheetUpdate={sheetUpdate} sheetWrite={sheetWrite} sheetDelete={sheetDelete}/>}
             {view==="capture"     &&<Capture     deals={deals} setDeals={setDeals} role={role}/>}
-            {view==="coach"       &&<Coach       deals={deals} initDeal={coachDeal} role={role} activity={activity}/>}
+            {view==="coach"       &&<Coach       deals={deals} role={role} activity={activity}/>}
             {view==="proposal"    &&<Proposal    deals={deals}/>}
             {view==="decks"       &&<DeckLibrary deals={deals} decks={decks} setDecks={setDecks}/>}
             {view==="forecast"    &&<Forecast    deals={deals} winLoss={winLoss}/>}
@@ -1296,12 +1100,11 @@ export default function App() {
         </div>
       </div>
 
-      <StrategicAI
+      <SalesMasterChat
         deals={deals}
         activity={activity}
         winLoss={winLoss}
         setView={setView}
-        setCoachDeal={setCoachDeal}
         role={role}
       />
     </div>
