@@ -3,7 +3,10 @@ import { PipelineDashboard, SalesMasterChat } from './PipelineCRM';
 import StrategicAI from './StrategicAI';
 
 // ── GOOGLE SHEETS API ──────────────────────────────────────────────────────────
-const API = process.env.REACT_APP_SHEETS_API;
+const RAW_API = process.env.REACT_APP_SHEETS_API || "";
+const API = process.env.NODE_ENV === "development" && /script\.google\.com\/macros\//.test(RAW_API)
+  ? "/__sheets_proxy__"
+  : RAW_API;
 const SHEET_CACHE_PREFIX = "nextdot-sales-engine";
 
 function cacheKey(sheet) {
@@ -76,6 +79,7 @@ function mergeRows(primaryRows, secondaryRows) {
 async function sheetRead(sheet) {
   try {
     const res = await fetch(`${API}?action=read&sheet=${sheet}`);
+    if (!res.ok) throw new Error(`Read failed (${res.status})`);
     const data = await res.json();
     const remoteRows = data.ok && Array.isArray(data.data) ? data.data : [];
     const merged = mergeRows(remoteRows, readCachedRows(sheet));
@@ -98,6 +102,7 @@ async function sheetWrite(sheet, row) {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ action:"write", sheet, row })
     });
+    if (!res.ok) return false;
     const data = await res.json();
     return data.ok;
   } catch { return false; }
@@ -110,6 +115,7 @@ async function sheetUpdate(sheet, id, updates) {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ action:"update", sheet, id, updates })
     });
+    if (!res.ok) return false;
     const data = await res.json();
     return data.ok;
   } catch { return false; }
@@ -122,6 +128,7 @@ async function sheetDelete(sheet, id) {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ action:"delete", sheet, id })
     });
+    if (!res.ok) return false;
     const data = await res.json();
     return data.ok;
   } catch { return false; }
@@ -129,7 +136,7 @@ async function sheetDelete(sheet, id) {
 
 // Log an activity entry to Sheets
 async function logActivity(dealId, client, type, note, owner) {
-  await sheetWrite("Activity", {
+  return await sheetWrite("Activity", {
     id: `act_${Date.now()}`,
     dealId, client, type, note, owner,
     timestamp: new Date().toISOString()
@@ -248,7 +255,7 @@ function Skeleton() {
 }
 function AIBox({ text, loading }) {
   if(loading) return <div style={{background:C.accentLight,borderRadius:"0 14px 14px 14px",padding:"14px 16px",border:`1px solid ${C.border}`}}><Skeleton/></div>;
-  return <div style={{background:C.accentLight,borderRadius:"0 14px 14px 14px",padding:"14px 16px",fontSize:13,color:C.text,lineHeight:1.75,border:`1px solid ${C.border}`,whiteSpace:"pre-wrap"}}>{text}</div>;
+  return <div style={{background:C.accentLight,borderRadius:"0 14px 14px 14px",padding:"14px 16px",fontSize:13,color:C.text,lineHeight:1.75,border:`1px solid ${C.border}`,whiteSpace:"pre-wrap",maxHeight:240,overflowY:"auto"}}>{text}</div>;
 }
 
 function SyncBadge({ syncing, synced, error }) {
@@ -317,6 +324,7 @@ function Capture({ deals, setDeals, role }) {
   const [input,setInput]=useState(""); const [file,setFile]=useState(null);
   const [parsing,setParsing]=useState(false); const [parsed,setParsed]=useState(null);
   const [saving,setSaving]=useState(false); const [saved,setSaved]=useState(false);
+  const [saveError,setSaveError]=useState("");
   const fileRef=useRef();
 
   const SYS=`You are a sales deal parser for Nextdot Digital Solutions. Parse any rough input into a structured deal. Respond ONLY with raw JSON (no markdown, no backticks):
@@ -338,6 +346,7 @@ Value in ₹Lakhs. Estimate if not stated. nextDate: 3-5 days from today. Infer 
   async function save(){
     if(!parsed||parsed.error) return;
     setSaving(true);
+    setSaveError("");
     const newDeal={
       ...parsed,
       id:`d_${Date.now()}`,
@@ -349,10 +358,15 @@ Value in ₹Lakhs. Estimate if not stated. nextDate: 3-5 days from today. Infer 
       updatedAt:new Date().toISOString(),
     };
     setDeals(prev=>[newDeal,...prev]);
-    await sheetWrite("Deals",newDeal);
-    await logActivity(newDeal.id,newDeal.client,"note","Deal captured via AI parser",role);
+    const dealSaved = await sheetWrite("Deals",newDeal);
+    const activitySaved = await logActivity(newDeal.id,newDeal.client,"note","Deal captured via AI parser",role);
     setSaving(false); setSaved(true);
-    setInput(""); setFile(null); setParsed(null);
+    if(dealSaved){
+      setInput(""); setFile(null); setParsed(null);
+    }
+    if(!dealSaved||!activitySaved){
+      setSaveError("Saved locally, but Google Sheets sync failed. Check API/CORS and try refresh.");
+    }
     setTimeout(()=>setSaved(false),3000);
   }
 
@@ -374,6 +388,7 @@ Value in ₹Lakhs. Estimate if not stated. nextDate: 3-5 days from today. Infer 
           <Btn label={parsing?"Parsing...":"Parse with AI"} onClick={parse} disabled={parsing||(!input.trim()&&!file)} icon="✦"/>
           {saved&&<span style={{fontSize:12,color:C.green,fontWeight:600}}>✓ Saved to Google Sheets</span>}
         </div>
+        {saveError&&<div style={{fontSize:12,color:C.red,marginTop:8}}>{saveError}</div>}
       </Card>
       {parsing&&<Card><Skeleton/></Card>}
       {parsed&&!parsed.error&&(
@@ -1045,13 +1060,25 @@ Use real data. Be specific. No generic advice.`;
 export default function App() {
   const [role,setRole]=useState(null);
   const [view,setView]=useState(null);
-  const [deals,setDeals]=useState([]);
+  // Initialize deals from localStorage immediately so they survive a refresh
+  // even when Google Sheets is unreachable or sheetWrite silently failed.
+  const [deals,setDeals]=useState(() => {
+    const cached = readCachedRows("Deals");
+    return cached.length > 0 ? cached : [];
+  });
   const [decks,setDecks]=useState([]);
   const [activity,setActivity]=useState([]);
   const [winLoss,setWinLoss]=useState([]);
-  // Note: coachDeal state removed - PipelineDashboard and SalesMasterChat handle their own state
   const [loading,setLoading]=useState(false);
   const [syncStatus,setSyncStatus]=useState("idle"); // idle | loading | ready | error
+
+  // Safety-net: persist the full deals array to localStorage on every change.
+  // This covers cases where upsertCachedRow / sheetWrite failed silently.
+  useEffect(() => {
+    if (deals.length > 0) {
+      writeCachedRows("Deals", deals);
+    }
+  }, [deals]);
 
   async function loadAllData(){
     setLoading(true); setSyncStatus("loading");
@@ -1062,14 +1089,22 @@ export default function App() {
         sheetRead("Activity"),
         sheetRead("WinLoss"),
       ]);
-      // Use sheet data if available, else fall back to seed
-      setDeals(dealsData.length>0 ? dealsData : SEED_DEALS);
+      // Always merge remote data with current localStorage cache so locally-added
+      // deals (that failed to reach Google Sheets) are never lost.
+      const localCache = readCachedRows("Deals");
+      const finalDeals = dealsData.length > 0
+        ? mergeRows(dealsData, localCache)   // remote is primary, local fills gaps
+        : (localCache.length > 0 ? localCache : SEED_DEALS);
+      setDeals(finalDeals);
       setDecks(decksData.length>0 ? decksData : SEED_DECKS);
       setActivity(actData);
       setWinLoss(wlData);
       setSyncStatus("ready");
     }catch{
-      setDeals(SEED_DEALS); setDecks(SEED_DECKS);
+      // Sheets unreachable – use whatever is in localStorage, fall back to seeds
+      const localCache = readCachedRows("Deals");
+      setDeals(localCache.length > 0 ? localCache : SEED_DEALS);
+      setDecks(SEED_DECKS);
       setSyncStatus("error");
     }
     setLoading(false);
@@ -1162,7 +1197,7 @@ export default function App() {
         </div>
 
         {/* Main */}
-        <div style={{flex:1,padding:"22px 26px",overflowY:"auto",minHeight:"calc(100vh - 54px)"}}>
+        <div style={{flex:1,padding:view==="inbox"?"0":"22px 26px",overflowY:view==="inbox"?"hidden":"auto",minHeight:"calc(100vh - 54px)"}}>
           {loading&&!deals.length&&(
             <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"60vh",flexDirection:"column",gap:12}}>
               <div style={{fontSize:13,color:C.textDim}}>Loading from Google Sheets...</div>

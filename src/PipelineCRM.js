@@ -371,7 +371,7 @@ function DealPanel({ deal, onClose, onUpdate, onDelete, activity, role }) {
             ))}
           </div>
           {(aiLoading || aiResp) && (
-            <div style={{ background: C.accentLight, border: `1px solid #bfdbfe`, borderRadius: 10, padding: "12px 14px", fontSize: 13, color: C.text, lineHeight: 1.7, whiteSpace: "pre-wrap" }}>
+            <div style={{ background: C.accentLight, border: `1px solid #bfdbfe`, borderRadius: 10, padding: "12px 14px", fontSize: 13, color: C.text, lineHeight: 1.7, whiteSpace: "pre-wrap", maxHeight: 220, overflowY: "auto" }}>
               {aiLoading ? <Skeleton /> : aiResp}
             </div>
           )}
@@ -470,7 +470,10 @@ function KanbanView({ deals, onDealClick, onStageChange, selectedId }) {
             </div>
 
             {/* Cards */}
-            <div style={{ flex: 1, overflowY: "auto", padding: "8px" }}>
+            <div
+              style={{ flex: 1, overflowY: "auto", padding: "8px", overscrollBehavior: "contain" }}
+              onWheel={e => e.stopPropagation()}
+            >
               {stageDeals
                 .sort((a, b) => urgencyScore(b) - urgencyScore(a))
                 .map(deal => {
@@ -485,7 +488,9 @@ function KanbanView({ deals, onDealClick, onStageChange, selectedId }) {
                       onClick={() => onDealClick(deal)}
                       style={{
                         background: isSelected ? `${stage.color}08` : C.white,
-                        border: `1.5px solid ${isSelected ? stage.color : C.border}`,
+                        borderTop: `1.5px solid ${isSelected ? stage.color : C.border}`,
+                        borderRight: `1.5px solid ${isSelected ? stage.color : C.border}`,
+                        borderBottom: `1.5px solid ${isSelected ? stage.color : C.border}`,
                         borderRadius: 10, padding: "11px 12px", marginBottom: 8,
                         cursor: "pointer", boxShadow: C.shadow,
                         transition: "all .12s",
@@ -652,6 +657,12 @@ export function PipelineDashboard({ deals: rawDeals, setDeals, activity, role, s
   const [selectedDeal, setSelectedDeal] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [filter, setFilter] = useState({ stage: "All", vertical: "All", owner: "All", priority: "All", search: "" });
+  const [syncNote, setSyncNote] = useState(""); // non-blocking sync status toast
+
+  function showSyncNote(msg) {
+    setSyncNote(msg);
+    setTimeout(() => setSyncNote(""), 4000);
+  }
 
   // Expose sheet functions globally for DealPanel
   useEffect(() => {
@@ -681,7 +692,10 @@ export function PipelineDashboard({ deals: rawDeals, setDeals, activity, role, s
       updatedAt: new Date().toISOString(),
     };
     setDeals(prev => [newDeal, ...prev]);
-    await sheetWrite("Deals", newDeal);
+    const saved = await sheetWrite("Deals", newDeal);
+    if (!saved) {
+      showSyncNote("Deal saved locally. Google Sheets sync failed — data is safe and will retry on next load.");
+    }
     setShowAddForm(false);
     setSelectedDeal(newDeal);
   }
@@ -689,7 +703,10 @@ export function PipelineDashboard({ deals: rawDeals, setDeals, activity, role, s
   async function handleUpdate(id, updates, activityEntry) {
     setDeals(prev => prev.map(d => d.id === id ? { ...d, ...updates } : d));
     if (selectedDeal?.id === id) setSelectedDeal(prev => ({ ...prev, ...updates }));
-    await sheetUpdate("Deals", id, updates);
+    const updated = await sheetUpdate("Deals", id, updates);
+    if (!updated) {
+      showSyncNote("Update saved locally. Google Sheets sync failed.");
+    }
     if (activityEntry) {
       // activity is managed by parent — just trigger a reload signal
     }
@@ -698,7 +715,10 @@ export function PipelineDashboard({ deals: rawDeals, setDeals, activity, role, s
   async function handleDelete(id) {
     setDeals(prev => prev.filter(d => d.id !== id));
     setSelectedDeal(null);
-    await sheetDelete("Deals", id);
+    const deleted = await sheetDelete("Deals", id);
+    if (!deleted) {
+      showSyncNote("Deal deleted locally. Google Sheets sync failed.");
+    }
   }
 
   async function handleStageChange(id, newStage) {
@@ -715,6 +735,20 @@ export function PipelineDashboard({ deals: rawDeals, setDeals, activity, role, s
 
   return (
     <div style={{ display: "flex", height: "calc(100vh - 54px)", overflow: "hidden", background: C.bg }}>
+      {/* Sync toast — non-blocking, auto-dismisses after 4s */}
+      {syncNote && (
+        <div style={{
+          position: "absolute", top: 58, left: "50%", transform: "translateX(-50%)",
+          background: "#1e293b", color: "#f8fafc", fontSize: 12, fontWeight: 500,
+          padding: "8px 18px", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,.18)",
+          zIndex: 999, whiteSpace: "nowrap", letterSpacing: 0.2,
+          display: "flex", alignItems: "center", gap: 8,
+        }}>
+          <span style={{ color: "#f59e0b" }}>⚠</span>
+          {syncNote}
+          <button onClick={() => setSyncNote("")} style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 14, lineHeight: 1, padding: 0, marginLeft: 4 }}>×</button>
+        </div>
+      )}
       {/* Main pipeline area */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", padding: "20px 24px 0" }}>
 
