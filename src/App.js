@@ -4,17 +4,96 @@ import StrategicAI from './StrategicAI';
 
 // ── GOOGLE SHEETS API ──────────────────────────────────────────────────────────
 const API = process.env.REACT_APP_SHEETS_API;
+const SHEET_CACHE_PREFIX = "nextdot-sales-engine";
+
+function cacheKey(sheet) {
+  return `${SHEET_CACHE_PREFIX}:${sheet}`;
+}
+
+function readCachedRows(sheet) {
+  try {
+    if (typeof window === "undefined") return [];
+    const raw = window.localStorage.getItem(cacheKey(sheet));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedRows(sheet, rows) {
+  try {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(cacheKey(sheet), JSON.stringify(rows));
+  } catch {
+    // Ignore storage quota or privacy-mode failures.
+  }
+}
+
+function upsertCachedRow(sheet, row) {
+  const rows = readCachedRows(sheet);
+  const idx = rows.findIndex(item => item?.id === row?.id);
+  if (idx >= 0) rows[idx] = { ...rows[idx], ...row };
+  else rows.unshift(row);
+  writeCachedRows(sheet, rows);
+  return rows;
+}
+
+function updateCachedRow(sheet, id, updates) {
+  const rows = readCachedRows(sheet).map(row => (row?.id === id ? { ...row, ...updates } : row));
+  writeCachedRows(sheet, rows);
+  return rows;
+}
+
+function deleteCachedRow(sheet, id) {
+  const rows = readCachedRows(sheet).filter(row => row?.id !== id);
+  writeCachedRows(sheet, rows);
+  return rows;
+}
+
+function defaultRowsForSheet(sheet) {
+  if (sheet === "Deals") return SEED_DEALS;
+  if (sheet === "Decks") return SEED_DECKS;
+  return [];
+}
+
+function mergeRows(primaryRows, secondaryRows) {
+  const merged = [];
+  const seen = new Set();
+  for (const row of [...primaryRows, ...secondaryRows]) {
+    const key = row?.id || JSON.stringify(row);
+    if (seen.has(key)) {
+      const idx = merged.findIndex(item => (item?.id || JSON.stringify(item)) === key);
+      if (idx >= 0) merged[idx] = { ...merged[idx], ...row };
+      continue;
+    }
+    seen.add(key);
+    merged.push(row);
+  }
+  return merged;
+}
 
 async function sheetRead(sheet) {
   try {
     const res = await fetch(`${API}?action=read&sheet=${sheet}`);
     const data = await res.json();
-    return data.ok ? data.data : [];
-  } catch { return []; }
+    const remoteRows = data.ok && Array.isArray(data.data) ? data.data : [];
+    const merged = mergeRows(remoteRows, readCachedRows(sheet));
+    if (merged.length > 0) {
+      writeCachedRows(sheet, merged);
+      return merged;
+    }
+    return defaultRowsForSheet(sheet);
+  } catch {
+    const merged = mergeRows(defaultRowsForSheet(sheet), readCachedRows(sheet));
+    if (merged.length > 0) writeCachedRows(sheet, merged);
+    return merged;
+  }
 }
 
 async function sheetWrite(sheet, row) {
   try {
+    upsertCachedRow(sheet, row);
     const res = await fetch(API, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ action:"write", sheet, row })
@@ -26,6 +105,7 @@ async function sheetWrite(sheet, row) {
 
 async function sheetUpdate(sheet, id, updates) {
   try {
+    updateCachedRow(sheet, id, updates);
     const res = await fetch(API, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ action:"update", sheet, id, updates })
@@ -37,6 +117,7 @@ async function sheetUpdate(sheet, id, updates) {
 
 async function sheetDelete(sheet, id) {
   try {
+    deleteCachedRow(sheet, id);
     const res = await fetch(API, {
       method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ action:"delete", sheet, id })
@@ -997,6 +1078,8 @@ export default function App() {
   async function seedToSheets(){
     // Write seed deals and decks to sheets if sheets are empty
     setSyncStatus("loading");
+    writeCachedRows("Deals", SEED_DEALS);
+    writeCachedRows("Decks", SEED_DECKS);
     for(const d of SEED_DEALS){ await sheetWrite("Deals",d); }
     for(const d of SEED_DECKS){ await sheetWrite("Decks",d); }
     setSyncStatus("ready");
